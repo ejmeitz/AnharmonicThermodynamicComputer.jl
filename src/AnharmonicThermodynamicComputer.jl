@@ -1,9 +1,9 @@
 module AnharmonicThermodynamicComputer
 
-using Polynomials
-using StaticArrays
-using Random
+import Random: randn!
 
-include("types.jl")
+include("neuron.jl")
+include("network.jl")
+include("simulate.jl")
 
 end

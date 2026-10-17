@@ -1,24 +1,23 @@
 
-abstract type ThermodynamicNeuron end
+abstract type ThermodynamicNeuron{FT <: AbstractFloat} end
 
 
-# J are couplings, I is input signal
-struct QuarticNeuron{P} <: ThermodynamicNeuron
-    J₂::Float64
-    J₃::Float64
-    J₄::Float64
-    coupling::P
+struct QuarticNeuron{FT} <: ThermodynamicNeuron{FT}
+    J₂::FT
+    J₃::FT
+    J₄::FT
 end
 
-function QuarticNeuron(J₂, J₃, J₄)
-    coupling = ImmutablePolynomial([0.0, 0.0, J₂, J₃, J₄])
-    return QuarticNeuron(J₂, J₃, J₄, coupling)
-end
+HarmonicNeuron(J₂::FT) where {FT <: AbstractFloat} =
+    QuarticNeuron(J₂, zero(FT), zero(FT))
 
-HarmonicNeuron(J₂) = QuarticNeuron(J₂, 0.0, 0.0)
+# U(x) = J₂x² + J₃x³ + J₄x⁴ - bx
+potential_energy(qn::QuarticNeuron, x, b) =
+    x^2 * (qn.J₂ + x * (qn.J₃ + x * qn.J₄)) - b * x
 
-# Eqn 1
-potential_energy(qn::QuarticNeuron, x, b) = qn.coupling(x) - (b * x)
+# F(x) = -2J₂x - 3J₃x² - 4J₄x³ + b
+force(qn::QuarticNeuron, x, b) =
+    b - x * (2 * qn.J₂ + x * (3 * qn.J₃ + 4 * qn.J₄ * x))
 
 
 #! TODO: add function to compute neuron in thermal equilirbium using Integrals.jl
