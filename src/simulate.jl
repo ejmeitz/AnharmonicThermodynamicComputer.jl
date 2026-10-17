@@ -1,0 +1,1 @@
+# Use like OrdinaryDiffEq.jl or something to model this, could also just code it the ODE is not that hard to time-step
