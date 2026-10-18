@@ -13,7 +13,6 @@ struct ThermodynamicNeuralNetwork{
     Wᵢⱼ::M                  # External coupling: (n_inputs, n_first_layer_neurons)
     fᵢ::V                   # (n_last_layer_neurons, )
     connectivity_matrix::C  # (n_neurons, n_neurons)
-    force_buffer::V        # (n_neurons,)
     n_layers::Int
 end
 
@@ -62,13 +61,15 @@ function AllToAllTNN(
     n_layers::Int,
     neurons_per_layer::Int,
     Wᵢⱼ::AbstractMatrix{FT}; # external coupling
-    J₂ = one(FT), J₃ = zero(FT), J₄ = one(FT)
+    J₂ = one(FT), J₃ = zero(FT), J₄ = one(FT),
+    σ = FT(0.1)
 ) where {FT <: AbstractFloat}
 
     @assert n_layers ≥ 1 && neurons_per_layer ≥ 1 "Layer and neuron counts must be positive"
     @assert size(Wᵢⱼ, 2) == neurons_per_layer "External coupling matrix must have the same number of columns as neurons in first layer"
 
     J₂, J₃, J₄ = FT(J₂), FT(J₃), FT(J₄)
+    σ = FT(σ)
 
     n_neurons = n_layers * neurons_per_layer
 
@@ -79,21 +80,20 @@ function AllToAllTNN(
     fill!(neurons, neuron)
 
     biases = similar(Wᵢⱼ, n_neurons)
-    randn!(biases) #! initialize someother way?
-
-    force_buffer = similar(biases)
-    force_buffer .= FT(0.0)
+    randn!(biases)
+    biases .*= σ
 
     connectivity_matrix = similar(Wᵢⱼ, Bool, n_neurons, n_neurons)
     all_to_all_connectivity_matrix!(connectivity_matrix, n_layers, neurons_per_layer)
 
     Jᵢⱼ = similar(Wᵢⱼ, n_neurons, n_neurons)
-    randn!(Jᵢⱼ) #! initialize someother way?
-    Jᵢⱼ = FT(0.5) * (Jᵢⱼ + transpose(Jᵢⱼ))
+    randn!(Jᵢⱼ)
+    Jᵢⱼ = FT(σ / sqrt(FT(2))) .* (Jᵢⱼ .+ transpose(Jᵢⱼ))
     Jᵢⱼ .*= connectivity_matrix
 
     fᵢ = similar(Wᵢⱼ, neurons_per_layer)
-    randn!(fᵢ) #! initialize someother way?
+    randn!(fᵢ)
+    fᵢ .*= σ
 
     return ThermodynamicNeuralNetwork(
         neurons,
@@ -102,7 +102,6 @@ function AllToAllTNN(
         Wᵢⱼ,
         fᵢ,
         connectivity_matrix,
-        force_buffer,
         n_layers
     )
 end
@@ -115,38 +114,42 @@ function V_internal(tnn::TNN{FT}, x::AbstractVector{FT}) where FT
     return V_local + V_coupling
 end
 
-function F_internal!(tnn::TNN{FT}, x::AbstractVector{FT}) where FT
+function V_internal(tnn::TNN{FT}, X::AbstractVecOrMat{FT}) where FT
+    V_local = sum(
+        potential_energy.(neurons(tnn), X, bias(tnn));
+        dims=1,
+    )
 
-    F_buffer = force_buffer(tnn)
+    V_coupling = FT(0.5) .* sum(
+        X .* (internal_coupling(tnn) * X);
+        dims=1,
+    )
 
-    # F_local
-    F_buffer .+= force.(neurons(tnn), x, bias(tnn))
-    # F_coupling
-    F_buffer .-= internal_coupling(tnn) * x
+    return V_local .+ V_coupling
+end
 
-    return tnn
+function F_internal!(F::T, tnn::TNN{FT}, X::T) where {FT, T <: AbstractVecOrMat{FT}}
+    F .+= force.(neurons(tnn), X, bias(tnn)) # F_local
+    F .-= internal_coupling(tnn) * X # F_coupling
+    return F
 end
 
 # Eqn 6
-function V_external(tnn::TNN{FT}, x::AbstractVector{FT}, I::AbstractVector{FT}) where FT
-    Wᵢⱼ = external_coupling(tnn)
-    @assert length(I) == size(Wᵢⱼ, 1) "Input vector length must match the number of rows in the external coupling matrix"
-    x_first = view(x, 1:neurons_in_first_layer(tnn))
-    return dot(I, Wᵢⱼ * x_first)
+function V_external(tnn::TNN{FT}, X::T, I::T) where {FT, T <: AbstractVecOrMat{FT}}
+    X_first = view(X, 1:neurons_in_first_layer(tnn), :)
+    return sum(I .* (external_coupling(tnn) * X_first); dims=1)
 end
 
-function F_external!(tnn::TNN{FT}, I::AbstractVector{FT}) where FT
-    Wᵢⱼ = external_coupling(tnn)
-    F_first = view(force_buffer(tnn), 1:neurons_in_first_layer(tnn))
-    F_first .-= transpose(Wᵢⱼ) * I
-    return tnn
+function F_external!(F::T, tnn::TNN{FT}, I::T) where {FT, T <: AbstractVecOrMat{FT}}
+    F_first = view(F, 1:neurons_in_first_layer(tnn), :)
+    F_first .-= transpose(external_coupling(tnn)) * I
+    return F
 end
 
-V(tnn::TNN{FT}, x::AbstractVector{FT}, I::AbstractVector{FT}) where FT = V_internal(tnn, x) + V_external(tnn, x, I)
+potential_energy(tnn::TNN{FT}, x::T, I::T) where {FT, T <: AbstractVecOrMat{T}} = V_internal(tnn, x) .+ V_external(tnn, x, I)
 
-function F!(tnn::TNN{FT}, x::AbstractVector{FT}, I::AbstractVector{FT}) where FT
-    zero_force_buffer!(tnn)
-    F_internal!(tnn, x)
-    F_external!(tnn, I)
-    return tnn
+function force!(F::T, tnn::TNN{FT}, x::T, I::T) where {FT, T <: AbstractVecOrMat{FT}}
+    F_internal!(F, tnn, x)
+    F_external!(F, tnn, I)
+    return F
 end
