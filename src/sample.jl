@@ -1,5 +1,5 @@
 function _estimate!(
-    tnn::TNN{FT},
+    tnn::AllToAllTNN{FT},
     sim::Simulation{FT},
     I::AbstractVecOrMat{FT}, # If vec batch_size = 1, else treat each col as a batch
 ) where FT
@@ -7,24 +7,25 @@ function _estimate!(
     @assert size(I, 2) == size(sim.X, 2) "Input batch size must match the simulation passed to _estimate"
 
     reset_state!(sim)
-    X_mean = _sample!(sim, tnn, I, sim.mode)
+    X_mean = _sample!(sim, tnn, I, sim.mode) # (n_neurons_final_layer, n_points)
 
-    # each example its own col, so need to transpose
-    return transpose(X_mean) * tnn.fᵢ
+    # Eqn 9 generalized for multi-output
+    return tnn.fᵢ * X_mean # (n_outputs, n_points)
 
 end
 
 function _sample!(
     sim::Simulation{FT},
-    tnn::TNN{FT},
+    tnn::AllToAllTNN{FT},
     I::AbstractVecOrMat{FT},
     ::Type{ResetMode}
 ) where FT
 
     N_steps = length(sim)
     N_last = neurons_in_last_layer(tnn)
-    batch_size = size(I, 2)
-    final_layer_results = similar(I, N_last, batch_size)
+    n_points = size(I, 2)
+    final_layer_results = similar(I, N_last, n_points)
+    final_layer_results .= zero(FT)
 
     for m in 1:sim.M #! can parallelize, need independent storage for X, η, and output
         # Evolve system according to dynamics
@@ -35,13 +36,14 @@ function _sample!(
     end
 
     # return state averaged over all trajectories
-    return (final_layer_results ./ sim.M)
+    final_layer_results ./= FT(sim.M)
+    return final_layer_results # (n_neurons_final_layer, n_points)
 
 end
 
 function _sample!(
     sim::Simulation{FT},
-    tnn::TNN{FT},
+    tnn::AllToAllTNN{FT},
     I::AbstractVecOrMat{FT},
     ::Type{SerialMode}
 ) where FT
@@ -50,7 +52,7 @@ end
 
 function simulate!(
     sim::Simulation{FT},
-    tnn::TNN{FT},
+    tnn::AllToAllTNN{FT},
     I::AbstractVecOrMat{FT},
     N_steps::Int
 ) where FT
@@ -64,7 +66,7 @@ end
 #TODO Try other time-stepping via DifferentialEquations.jl
 function step!(
     sim::Simulation{FT},
-    tnn::TNN{FT},
+    tnn::AllToAllTNN{FT},
     I::AbstractVecOrMat{FT}
 ) where FT
 

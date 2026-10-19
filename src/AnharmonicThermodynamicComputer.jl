@@ -5,6 +5,7 @@ using ProgressMeter
 
 include("neuron.jl")
 include("network.jl")
+include("simulation.jl")
 include("sample.jl")
 include("trainers.jl")
 

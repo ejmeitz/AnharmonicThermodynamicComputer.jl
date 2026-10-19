@@ -1,97 +1,116 @@
-export SamplingMode, Simulation
+export MSE
 
-abstract type SamplingMode end
+#### LOSS FUNCTIONS ####
 
-struct ResetMode <: SamplingMode end
-struct SerialMode <: SamplingMode end
+function MSE(y_pred, targets)
+    yp_sz = size(y_pred) 
+    t_sz = size(targets)
+    # Both should be (n_outputs, n_points)
+    @assert yp_sz == t_sz "Prediction $(yp_sz) and target $(t_sz) shapes must match for MSE loss"
 
-
-# Just a data container
-struct Simulation{
-    FT <: AbstractFloat,
-    T <: AbstractVecOrMat{FT},
-    SM <: SamplingMode
-}
-    X::T
-    η_buffer::T
-    F_buffer::T
-    Δt::FT
-    t_final::FT
-    kBT::FT
-    drift_scale::FT
-    noise_scale::FT
-    M::Int
-    mode::Type{SM}
+    return sum(abs2, y_pred .- targets) / yp_sz[2]
 end
 
-function Simulation(
-    tnn::TNN{FT},
-    I::AbstractVecOrMat{FT},
-    Δt::FT,
-    t_final::FT,
-    kBT::FT,
-    M::Int,
-    ::Type{SM};
-    μ::FT = one(FT)
-) where {FT, SM}
+#########################
 
-    @assert size(I, 1) == size(external_coupling(tnn), 1) "Input feature count must match the number of rows in W"
-
-    @assert isapprox(n * Δt, t_final) "t_final must be a multiple of Δt"
-
-    # State of network
-    X = if I isa AbstractVector
-        similar(I, n_neurons(tnn))
-    else
-        similar(I, n_neurons(tnn), size(I, 2))
-    end
-    X .= FT(0.0)
-    # Random number buffer for time-stepping
-    η_storage = similar(X)
-    # Force buffer for time-stepping
-    F_storage = similar(X)
-
-    drift_scale = (μ * Δt)
-    noise_scale = sqrt(2 * kBT * drift_scale)
-
-    return Simulation(X, η_storage, F_storage, Δt, t_final, kBT, drift_scale, noise_scale, M, SM)
+struct GeneticOptimizer{L, T}
+    n_candidates::Int
+    n_kept::Int # The best `n_kept` models are retained each iteration
+    loss_fn::L
+    mutation_scale::T
 end
 
-Base.length(sim::Simulation) = round(Int, sim.t_final / sim.Δt)
+function mutate_parameters!(tnn::AllToAllTNN{FT}, σ::Real) where FT
+    σ = FT(σ)
 
-zero_state_vector!(sim::Simulation{FT}) where FT = (sim.X .= zero(FT))
-zero_force_buffer!(sim::Simulation{FT}) where FT = (sim.F_buffer .= zero(FT))
-zero_η_buffer!(sim::Simulation{FT}) where FT = (sim.η_buffer .= zero(FT))
+    b = bias(tnn)
+    W = external_coupling(tnn)
+    J = internal_coupling(tnn)
+    f = tnn.fᵢ
+
+    #! kinda expensive to duplicate like this
+    Δb = similar(b)
+    ΔW = similar(W)
+    ΔJ = similar(J)
+    Δf = similar(f)
+
+    randn!(Δb)
+    randn!(ΔW)
+    randn!(ΔJ)
+    randn!(Δf)
+
+    b .+= σ .* Δb
+    f .+= σ .* Δf
+    W .+= σ .* ΔW .* tnn.W_scale
+
+    J .+= (σ / sqrt(FT(2))) .*
+          (ΔJ .+ transpose(ΔJ)) .*
+          tnn.J_scale
+
+    return tnn
+end
+
+
+function run_sim_factory(factory::Function, tnn::AllToAllTNN)
+    sim = factory(tnn)
+    sim isa Simulation || throw(ArgumentError(
+        "simulation_factory(tnn) returned $(typeof(candidate)). Must be <: Simulation"
+    ))
+    return sim
+end
+
+run_sim_factory(::Function, ::T) where T = error("tnn_factory() returned type $(T), expected AllToAllTNN")
 
 
 #! look into Evolutionary.jl
-"""
-
-If the input, `z`, is:
-- Scalar: M
-
-"""
 function train_genetic(
-    n_candidates::Int,
-    n_layers::Int,
-    neurons_per_layer::Int,
-    Wᵢⱼ::AbstractMatrix{FT}, # (n_inputs x n_neurons_first_layer)
-    z::AbstractVecOrMat{FT}, # (n_inputs x n_points) or (n_inputs, )
-    M::Int,
-    ::ResetMode,
-    target_function
+    go::GeneticOptimizer,
+    tnn_factory,
+    simulation_factory,
+    z::AbstractVecOrMat,
+    targets::AbstractVecOrMat;
+    n_generations::Int,
 )
+    @assert 1 <= go.n_kept <= go.n_candidates
+    @assert n_generations >= 1
 
-    @assert length(z) == size(Wᵢⱼ, 1) "Input vector `z` must have same length as number of rows in external coupling matrix Wᵢⱼ"
+    candidates = [tnn_factory() for _ in 1:go.n_candidates]
+    offspring = similar.(candidates)
 
-    candidates = [AllToAllTNN(n_layers, neurons_per_layer, Wᵢⱼ) for _ in 1:n_candidates]
+    tnn = first(candidates)
+    @assert size(z, 1) == size(external_coupling(tnn), 1) "Input feature count must match W"
 
-    ground_truth = target_function.(z_k)
+    # Reused across sequential evaluations of identically shaped networks
+    sim = simulation_factory(tnn)
 
-    for candidate in candidates
-        y_pred = _estimate!(candidate, Δt, t_final, z, M, ResetMode)
-        y_actual = t
-        loss = 
+    p = Progress(n_generations; dt = 1.0) # would be nice to have this also tick up with each M that finishes
+    for generation in 1:n_generations
+        # Evaluate current population
+        losses = map(candidates) do candidate
+            y_pred = _estimate!(candidate, sim, z)
+            go.loss_fn(y_pred, targets)
+        end
+
+        # Rank candidates by increasing loss
+        ranking = sortperm(losses)
+        selected = ranking[1:go.n_kept]
+
+        # Can finish early
+        if generation == n_generations
+            return candidates[first(ranking)]
+        end
+
+        # Cycle through selected parents to populate all offspring buffers
+        # Maps n_candidates // n_kept
+        for (child, parent_idx) in zip(offspring, Iterators.cycle(selected))
+            copy_parameters!(child, candidates[parent_idx])
+            mutate_parameters!(child, go.mutation_scale)
+        end
+
+        candidates, offspring = offspring, candidates
+        next!(p)
     end
-
+    finish!(p)
 end
+
+
