@@ -34,13 +34,11 @@ external_coupling(tnn::AllToAllTNN) = tnn.Wᵢⱼ
 force_buffer(tnn::AllToAllTNN) = tnn.force_buffer
 neurons(tnn::AllToAllTNN) = tnn.neurons
 
-Base.length(tnn::AllToAllTNN) = length(neurons(tnn))
-n_neurons(tnn::AllToAllTNN) = length(tnn)
+n_neurons(tnn::AllToAllTNN) = length(neurons(tnn))
+Base.length(tnn::AllToAllTNN) = n_neurons(tnn)
 n_layers(tnn::AllToAllTNN) = tnn.n_layers
 neurons_in_first_layer(tnn::AllToAllTNN) = size(external_coupling(tnn), 2)
 neurons_in_last_layer(tnn::AllToAllTNN) = neurons_in_first_layer(tnn) #! not the most general but whatever
-
-zero_force_buffer!(tnn::AllToAllTNN{FT}) where FT = (tnn.force_buffer .= zero(FT))
 
 function all_to_all_connectivity_matrix!(cm, n_layers::Int, neurons_per_layer::Int)
 
