@@ -83,7 +83,7 @@ function train_genetic(
     # Reused across sequential evaluations of identically shaped networks
     sim = simulation_factory(tnn)
 
-    p = Progress(n_generations; dt = 1.0) # would be nice to have this also tick up with each M that finishes
+    p1 = Progress(n_generations; desc="Generations: ", dt = 1.0)
     for generation in 1:n_generations
         # Evaluate current population
         losses = map(candidates) do candidate
@@ -108,9 +108,9 @@ function train_genetic(
         end
 
         candidates, offspring = offspring, candidates
-        next!(p)
+        next!(p1)
     end
-    finish!(p)
+    finish!(p1)
 end
 
 

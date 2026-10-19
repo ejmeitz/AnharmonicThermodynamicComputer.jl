@@ -27,13 +27,16 @@ function _sample!(
     final_layer_results = similar(I, N_last, n_points)
     final_layer_results .= zero(FT)
 
+    sample_progress = Progress(sim.M; desc="Reset samples: ", offset=1)
     for m in 1:sim.M #! can parallelize, need independent storage for X, η, and output
         # Evolve system according to dynamics
         simulate!(sim, tnn, I, N_steps)
         # Sample final layer neurons and reset
         final_layer_results .+= @view sim.X[end - N_last + 1 : end, :]
         zero_state_vector!(sim)
+        next!(sample_progress)
     end
+    finish!(sample_progress)
 
     # return state averaged over all trajectories
     final_layer_results ./= FT(sim.M)
