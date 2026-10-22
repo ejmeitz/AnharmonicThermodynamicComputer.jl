@@ -2,6 +2,7 @@ module AnharmonicThermodynamicComputer
 
 import Random: randn!
 using ProgressMeter
+using FastGaussQuadrature
 
 include("neuron.jl")
 include("network.jl")

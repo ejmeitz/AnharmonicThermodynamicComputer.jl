@@ -20,7 +20,19 @@ force(qn::QuarticNeuron, x, b) =
     b - x * (2 * qn.J₂ + x * (3 * qn.J₃ + 4 * qn.J₄ * x))
 
 
-#! TODO: add function to compute neuron in thermal equilirbium using Integrals.jl
-#! can also get variance (thermal fluctuations) from this
+# Average neuron output in thermal equilibrium at temperature `T`
+function average_equilibrium_output(
+    tn::ThermodynamicNeuron{FT},
+    I::AbstractVector{FT},
+    kBT::Real;
+    n_pts = 128
+) where FT
+    
+    β = inv(FT(kBT))
+    points, w = gausshermite(FT, n_pts)
+    logweights = @. log(w) + x^2 - (β * potential_energy(Ref(tn), points, I))
+    weights = exp.(logweights .- maximum(logweights)) # try to prevent overflow
+    return dot(x, weights) / sum(weights)
+end
 
 

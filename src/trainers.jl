@@ -113,4 +113,9 @@ function train_genetic(
     finish!(p1)
 end
 
+#######################
 
+# Should be possible to AD through the time-step even with noise
+struct SGD
+
+end
