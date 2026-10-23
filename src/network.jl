@@ -40,6 +40,8 @@ n_layers(tnn::AllToAllTNN) = tnn.n_layers
 neurons_in_first_layer(tnn::AllToAllTNN) = size(external_coupling(tnn), 2)
 neurons_in_last_layer(tnn::AllToAllTNN) = neurons_in_first_layer(tnn) #! not the most general but whatever
 
+params(tnn::AllToAllTNN) = (b=tnn.biases, J=tnn.Jᵢⱼ, W=tnn.Wᵢⱼ, f=tnn.fᵢ)
+
 function all_to_all_connectivity_matrix!(cm, n_layers::Int, neurons_per_layer::Int)
 
     cm .= false
@@ -180,7 +182,7 @@ function V_internal(tnn::AllToAllTNN{FT}, X::AbstractVecOrMat{FT}) where FT
     return V_local .+ V_coupling
 end
 
-function F_internal!(F::T, tnn::AllToAllTNN{FT}, X::T) where {FT, T <: AbstractVecOrMat{FT}}
+function add_F_internal!(F::T, tnn::AllToAllTNN{FT}, X::T) where {FT, T <: AbstractVecOrMat{FT}}
     F .+= force.(neurons(tnn), X, bias(tnn)) # F_local
     F .-= internal_coupling(tnn) * X # F_coupling
     return F
@@ -192,7 +194,7 @@ function V_external(tnn::AllToAllTNN{FT}, X::T, I::T) where {FT, T <: AbstractVe
     return sum(I .* (external_coupling(tnn) * X_first); dims=1)
 end
 
-function F_external!(F::T, tnn::AllToAllTNN{FT}, I::T) where {FT, T <: AbstractVecOrMat{FT}}
+function add_F_external!(F::T, tnn::AllToAllTNN{FT}, I::T) where {FT, T <: AbstractVecOrMat{FT}}
     F_first = view(F, 1:neurons_in_first_layer(tnn), :)
     F_first .-= transpose(external_coupling(tnn)) * I
     return F
@@ -201,7 +203,7 @@ end
 potential_energy(tnn::AllToAllTNN{FT}, x::T, I::T) where {FT, T <: AbstractVecOrMat{FT}} = V_internal(tnn, x) .+ V_external(tnn, x, I)
 
 function force!(F::T, tnn::AllToAllTNN{FT}, x::T, I::T) where {FT, T <: AbstractVecOrMat{FT}}
-    F_internal!(F, tnn, x)
-    F_external!(F, tnn, I)
+    add_F_internal!(F, tnn, x)
+    add_F_external!(F, tnn, I)
     return F
 end

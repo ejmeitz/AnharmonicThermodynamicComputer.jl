@@ -9,8 +9,8 @@ struct SerialMode <: SamplingMode end
 # Just a data container
 struct Simulation{
     FT <: AbstractFloat,
+    SM <: SamplingMode,
     T <: AbstractVecOrMat{FT},
-    SM <: SamplingMode
 }
     X::T
     η_buffer::T
@@ -21,8 +21,8 @@ struct Simulation{
     drift_scale::FT
     noise_scale::FT
     M::Int
-    mode::Type{SM}
 end
+
 
 function Simulation(
     tnn::AllToAllTNN{FT},
@@ -55,7 +55,7 @@ function Simulation(
     drift_scale = (μ * Δt)
     noise_scale = sqrt(2 * kBT * drift_scale)
 
-    return Simulation(X, η_storage, F_storage, Δt, t_final, kBT, drift_scale, noise_scale, M, SM)
+    return Simulation{FT,SM,typeof(X)}(X, η_storage, F_storage, Δt, t_final, kBT, drift_scale, noise_scale, M)
 end
 
 Base.length(sim::Simulation) = round(Int, sim.t_final / sim.Δt)

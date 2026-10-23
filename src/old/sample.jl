@@ -6,7 +6,7 @@ function _estimate!(
 
     @assert size(I, 2) == size(sim.X, 2) "Input batch size must match the simulation passed to _estimate"
 
-    reset_state!(sim)
+    zero_state_vector!(sim) # set X₀ = 0
     X_mean = _sample!(sim, tnn, I, sim.mode) # (n_neurons_final_layer, n_points)
 
     # Eqn 9 generalized for multi-output
@@ -15,13 +15,11 @@ function _estimate!(
 end
 
 function _sample!(
-    sim::Simulation{FT},
+    sim::Simulation{FT, ResetMode},
     tnn::AllToAllTNN{FT},
     I::AbstractVecOrMat{FT},
-    ::Type{ResetMode}
 ) where FT
 
-    N_steps = length(sim)
     N_last = neurons_in_last_layer(tnn)
     n_points = size(I, 2)
     final_layer_results = similar(I, N_last, n_points)
@@ -30,7 +28,7 @@ function _sample!(
     sample_progress = Progress(sim.M; desc="Reset samples: ", offset=1)
     for m in 1:sim.M #! can parallelize, need independent storage for X, η, and output
         # Evolve system according to dynamics
-        simulate!(sim, tnn, I, N_steps)
+        simulate!(sim, tnn, I)
         # Sample final layer neurons and reset
         final_layer_results .+= @view sim.X[end - N_last + 1 : end, :]
         zero_state_vector!(sim)
@@ -45,10 +43,9 @@ function _sample!(
 end
 
 function _sample!(
-    sim::Simulation{FT},
+    sim::Simulation{FT, SerialMode},
     tnn::AllToAllTNN{FT},
     I::AbstractVecOrMat{FT},
-    ::Type{SerialMode}
 ) where FT
     error("Serial mode not implemented yet.")
 end
@@ -57,9 +54,9 @@ function simulate!(
     sim::Simulation{FT},
     tnn::AllToAllTNN{FT},
     I::AbstractVecOrMat{FT},
-    N_steps::Int
 ) where FT
 
+    N_steps = length(sim)
     for _ in 1:N_steps
         step!(sim, tnn, I)
     end
