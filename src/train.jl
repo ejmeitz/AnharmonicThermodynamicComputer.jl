@@ -2,7 +2,7 @@
 
 #! FIGURE THSI FUNC OUT BETTER:
 #! NEED TO PASS  SENALG: sensealg = SMS.ForwardDiffSensitivity()
-function mse_loss(params, y_target)
+function mse_loss(params; y_target, tnn, sim_settings)
     y_pred = _predict!(params)
 
     yp_sz = size(y_pred) 
@@ -26,9 +26,9 @@ function train(
 ) where {FT, SM <: SamplingMode}
 
     adtype = OPT.AutoZygote() #! which AD backend to use? definitely want reverse mode
-    loss_func = (θ, p) -> mse_loss(θ, targets, tnn, sim_settings, z) #! FIGURE OUT HOW TO DEFINE THIS
+    loss_func = (params, extra_args) -> mse_loss(params, extra_args...) #! FIGURE OUT HOW TO DEFINE THIS
     optf = OPT.OptimizationFunction(mse_loss, adtype)
-    optprob = OPT.OptimizationProblem(optf, params(tnn)) #! ARE PARAMS UPDATED IN PLACE?
+    optprob = OPT.OptimizationProblem(optf, params(tnn), (y_target=targets, tnn=tnn, sim_settings=sim_settings)) #! ARE PARAMS UPDATED IN PLACE?
 
     result_sde = OPT.solve(optprob, optimizer; maxiters = maxiters)
 
