@@ -30,6 +30,7 @@ function _predict!(
     sim::SimulationSettings{FT},
     X₀::T,
     I::T,
+    sensalg
 ) where {FT, T <: AbstractVecOrMat{FT}}
 
     @assert size(I, 2) == size(X₀, 2) "Input and initial state batch size (2nd dim) must match got $(size(I,2)), $(size(X₀, 2))"
@@ -68,12 +69,14 @@ function _simulate!(
     prob,
     sim_settings,
     I::AbstractVecOrMat{FT},
+    sensalg
 ) where FT
     
     ensembleprob = SDE.EnsembleProblem(prob)
     sol = solve(
         ensembleprob,
         sim.solver;
+        sensalg=sensalg,
         trajectories = sim.M,
         dt=sim.Δt,
         adaptive= false, #! change?

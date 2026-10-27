@@ -5,8 +5,11 @@ using ProgressMeter
 using FastGaussQuadrature
 
 import OrdinaryDiffEq.StochasticDiffEq as SDE
-import Optimization as OPT
-import OptimizationOptimisers as OPO
+import Optimisers
+
+# AD support for ODE solves
+import SciMLSensitivity
+
 
 include("neuron.jl")
 include("network.jl")
