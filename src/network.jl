@@ -93,7 +93,10 @@ function TNNParameters(
     σ = FT(σ)
 
     n_neurons = n_layers * neurons_per_layer
+    
     Wᵢⱼ = similar(array_prototype, n_inputs, neurons_per_layer)
+    randn!(Wᵢⱼ)
+    Wᵢⱼ .*= σ
 
     bᵢ = similar(Wᵢⱼ, n_neurons)
     randn!(bᵢ)
@@ -132,7 +135,14 @@ end
 
 # Lets me use structs and tells Optimisers.jl
 # which children to look in for trainable parameters
-Functors.@functor TNN (params,)
+function Functors.functor(::Type{<:TNN{FT,C}}, tnn) where {FT,C}
+    children = (; params = tnn.params)
+    # C is not a field, so the default reconstruction cannot infer it.
+    reconstruct = p -> TNN{FT,C,typeof(tnn.neurons),typeof(p.params)}(
+        tnn.neurons, p.params, tnn.n_layers
+    )
+    return children, reconstruct
+end
 
 params(tnn::TNN) = tnn.params
 neurons(tnn::TNN) = tnn.neurons
@@ -210,8 +220,13 @@ function V_internal(tnn::TNN{FT}, X::AbstractVecOrMat{FT}) where FT
 end
 
 function add_F_internal!(F::T, tnn::TNN{FT}, X::T) where {FT, T <: AbstractVecOrMat{FT}}
-    F .+= force.(neurons(tnn), X, bias(tnn)) # F_local
-    F .-= internal_coupling(tnn) * X # F_coupling
+    return _add_F_internal!(F, neurons(tnn), params(tnn), X)
+end
+
+# This variant is needed for AD to work
+function _add_F_internal!(F, neuron_data, p, X)
+    F .+= force.(neuron_data, X, p.bᵢ) # F_local
+    F .-= p.Jᵢⱼ * X # F_coupling
     return F
 end
 
@@ -222,8 +237,13 @@ function V_external(tnn::TNN{FT}, X::T, I::T) where {FT, T <: AbstractVecOrMat{F
 end
 
 function add_F_external!(F::T, tnn::TNN{FT}, I::T) where {FT, T <: AbstractVecOrMat{FT}}
-    F_first = view(F, 1:n_first_layer_neurons(tnn), :)
-    F_first .-= transpose(external_coupling(tnn)) * I
+    return _add_F_external!(F, params(tnn), I)
+end
+
+# This variant is needed for AD to work
+function _add_F_external!(F, p, I)
+    F_first = view(F, 1:size(p.Wᵢⱼ, 2), :)
+    F_first .-= transpose(p.Wᵢⱼ) * I
     return F
 end
 

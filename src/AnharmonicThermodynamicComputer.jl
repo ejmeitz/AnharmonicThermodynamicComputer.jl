@@ -1,6 +1,7 @@
 module AnharmonicThermodynamicComputer
 
 import Random: randn!
+import Random
 using ProgressMeter
 using FastGaussQuadrature
 
@@ -19,6 +20,7 @@ import Zygote
 
 include("neuron.jl")
 include("network.jl")
+include("sensitivity.jl")
 include("simulate.jl")
 include("train.jl")
 

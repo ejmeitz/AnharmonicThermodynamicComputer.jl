@@ -2,6 +2,7 @@ using AnharmonicThermodynamicComputer
 using SciMLSensitivity
 using Optimisers
 using Zygote
+using LinearAlgebra
 
 const ATC = AnharmonicThermodynamicComputer
 
@@ -47,27 +48,20 @@ tnn = TNN(params, n_neurons, n_layers)
 
 # Diagnostics: verify trainable fields
 println("Trainable parameters:")
-total = 0
+total = sum(length, Optimisers.trainables(tnn))
 
 for (path, p) in Optimisers.trainables(tnn; path=true)
     println("  $path: $(size(p)) ($(length(p)) elements)")
-    total += length(p)
 end
 
 println("Total parameters: $total")
 
 # Sensitivity algorithm
-sensealg = SciMLSensitivity.GaussAdjoint(
-    autojacvec = SciMLSensitivity.ZygoteVJP()
-) # errors doesnt support continuous 
-
 sensealg = SciMLSensitivity.ReverseDiffAdjoint()
-sensealg = SciMLSensitivity.EnzymeAdjoint()
-sensealg = SciMLSensitivity.TrackerAdjoint()
 
 # Loss function
 loss(tnn) = ATC.mse_loss(
-    tnn, sim, X₀, I, targets, sensealg
+    tnn, sim, X₀, I, targets, sensealg; seed=1234
 )
 
 # Test forward evaluation
@@ -107,10 +101,11 @@ opt_state = Optimisers.setup(
     tnn
 )
 
+J_before = copy(tnn.params.Jᵢⱼ)
 opt_state, tnn_new = Optimisers.update(
     opt_state, tnn, grad
 )
 
 println("Optimizer update completed.")
 
-@show maximum(abs.(tnn_new.params.Jᵢⱼ .- tnn.params.Jᵢⱼ))
+@show maximum(abs.(tnn_new.params.Jᵢⱼ .- J_before))
