@@ -78,13 +78,19 @@ function mutation_scales(
     return J_scale, W_scale
 end
 
+float_type(::Type{<:AbstractArray{T}}) where T = T
+
 function TNNParameters(
     n_inputs::Int,
     n_layers::Int,
     neurons_per_layer::Int,
     n_outputs::Int,
-    array_prototype::AT,
+    array_prototype::AT;
+    σ = 0.1
 ) where {AT <: AbstractArray}
+
+    FT = float_type(AT)
+    σ = FT(σ)
 
     n_neurons = n_layers * neurons_per_layer
     Wᵢⱼ = similar(array_prototype, n_inputs, neurons_per_layer)
@@ -142,34 +148,18 @@ n_first_layer_neurons(tnn::TNN) = n_first_layer_neurons(params(tnn))
 n_last_layer_neurons(tnn::TNN) = n_last_layer_neurons(params(tnn))
 
 function TNN(
-    n_inputs::Int,
-    n_layers::Int,
-    neurons_per_layer::Int,
-    n_outputs::Int,
-    array_prototype::AbstractArray{FT};
-    J₂ = one(FT), J₃ = zero(FT), J₄ = one(FT),
-    σ = FT(0.1)
-) where {FT <: AbstractFloat}
-    @assert n_layers ≥ 1 && neurons_per_layer ≥ 1 "Layer and neuron counts must be positive"
-    params = TNNParameters(n_inputs, n_layers, neurons_per_layer, n_outputs, array_prototype)
-    return TNN(params; J₂=J₂, J₃=J₃, J₄=J₄, σ=σ)
-end
-
-function TNN(
-    parameters::TNNParameters{FT, V};
-    J₂ = one(FT), J₃ = zero(FT), J₄ = one(FT),
-    σ = FT(0.1)
-) where {FT, V}
+    parameters::TNNParameters{FT},
+    n_neurons::Int,
+    n_layers::Int;
+    J₂ = one(FT), J₃ = zero(FT), J₄ = one(FT)
+) where {FT}
 
     J₂, J₃, J₄ = FT(J₂), FT(J₃), FT(J₄)
-    σ = FT(σ)
-
-    n_neurons = n_layers * neurons_per_layer
 
     # Initialize things in a way that is agnostic
     # to the array backend (i.e. Array or CuArray)
     neuron = QuarticNeuron(FT(J₂), FT(J₃), FT(J₄))
-    neurons = similar(V, typeof(neuron), n_neurons)
+    neurons = similar(output_coupling(parameters), typeof(neuron), n_neurons)
     fill!(neurons, neuron)
 
     # Just hardcode AllToAll for now
@@ -178,6 +168,20 @@ function TNN(
         parameters,
         n_layers
     )
+end
+
+function TNN(
+    n_inputs::Int,
+    n_layers::Int,
+    neurons_per_layer::Int,
+    n_outputs::Int,
+    array_prototype::AbstractArray{FT};
+    J₂ = one(FT), J₃ = zero(FT), J₄ = one(FT)
+) where {FT <: AbstractFloat}
+    @assert n_layers ≥ 1 && neurons_per_layer ≥ 1 "Layer and neuron counts must be positive"
+    params = TNNParameters(n_inputs, n_layers, neurons_per_layer, n_outputs, array_prototype)
+    n_neurons = n_layers * neurons_per_layer
+    return TNN(params, n_neurons, n_layers; J₂=J₂, J₃=J₃, J₄=J₄)
 end
 
 
@@ -213,12 +217,12 @@ end
 
 # Eqn 6
 function V_external(tnn::TNN{FT}, X::T, I::T) where {FT, T <: AbstractVecOrMat{FT}}
-    X_first = view(X, 1:neurons_in_first_layer(tnn), :)
+    X_first = view(X, 1:n_first_layer_neurons(tnn), :)
     return sum(I .* (external_coupling(tnn) * X_first); dims=1)
 end
 
 function add_F_external!(F::T, tnn::TNN{FT}, I::T) where {FT, T <: AbstractVecOrMat{FT}}
-    F_first = view(F, 1:neurons_in_first_layer(tnn), :)
+    F_first = view(F, 1:n_first_layer_neurons(tnn), :)
     F_first .-= transpose(external_coupling(tnn)) * I
     return F
 end
