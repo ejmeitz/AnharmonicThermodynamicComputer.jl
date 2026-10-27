@@ -16,17 +16,23 @@ struct SimulationSettings{
     M::Int
 end
 
-function SimulationSettings(Δt, t_final, kBT, μ, M, ::Type{SM}) where {FT, SM <: SamplingMode}
+sampling_mode(::SimulationSettings{<:Any, SM}) where SM = SM
 
-    @assert size(I, 1) == size(external_coupling(tnn), 1) "Input feature count must match the number of rows in W"
+function SimulationSettings(Δt, t_final, kBT, μ, M, ::Type{SM}) where {SM <: SamplingMode}
 
     noise_scale = sqrt(2 * kBT * μ * Δt)
 
     return SimulationSettings{FT,SM}(FT(Δt), FT(t_final), FT(noise_scale), FT(μ), M)
 end
 
+# Reconstruct with specified float type
+function SimulationSettings(sim, ::Type{FT}) where {FT <: AbstractFloat}
+    SM = sampling_mode(sim)
+    return SimulationSettings{FT, SM}()
+end
+
 function _predict!(
-    tnn::AllToAllTNN{FT},
+    tnn::TNN{FT},
     sim::SimulationSettings{FT},
     X₀::T,
     I::T,

@@ -13,6 +13,17 @@ function mse_loss(tnn, sim, X₀, I, y_target, sensealg)
     return sum(abs2, y_pred .- y_target) / yp_sz[2]
 end
 
+function model_info(tnn::TNN)
+    trainable = Optimisers.trainables(tnn)
+
+    for (i, p) in enumerate(trainable)
+        println("Parameter $i: $(size(p)), $(typeof(p))")
+    end
+
+    println("Total trainable parameters: ", sum(length, trainable))
+
+end
+
 
 #! right now hard coded for MSE, need to abstract to other losses 
 function train(
@@ -45,6 +56,8 @@ function train(
     )
 
     loss_buffer = Vector{FT}(undef, maxiters)
+
+    model_info(tnn)
 
     for i in 1:maxiters
         value, grads = Zygote.withgradient(loss, tnn)

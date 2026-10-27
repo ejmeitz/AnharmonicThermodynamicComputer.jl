@@ -4,11 +4,12 @@ import Random: randn!
 using ProgressMeter
 using FastGaussQuadrature
 
-import OrdinaryDiffEq.StochasticDiffEq as SDE
+import StochasticDiffEq as SDE
 import Optimisers
 
 # AD support for ODE solves
 import SciMLSensitivity
+import Functors
 
 
 include("neuron.jl")

@@ -118,7 +118,7 @@ struct TNN{
     C <: Connectivity,
     N <: AbstractVector{<:ThermodynamicNeuron{FT}},
     P <: TNNParameters{FT},
-} <: TNN{FT}
+}
     neurons::N
     params::P
     n_layers::Int
