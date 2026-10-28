@@ -9,19 +9,19 @@ import SciMLBase
 import StochasticDiffEq as SDE
 import Optimisers
 
-# AD support for ODE solves
-import SciMLSensitivity
 # Support arbirary structs instead of requring
 # parameters to be stored as separate vector/matrix
 import Functors
 
-import Zygote
+import ReverseDiff
 
 
 include("neuron.jl")
 include("network.jl")
 include("sensitivity.jl")
 include("simulate.jl")
+include("replay.jl")
+include("replay_cache.jl")
 include("train.jl")
 
 end

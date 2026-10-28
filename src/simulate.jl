@@ -1,4 +1,4 @@
-export ResetMode, SerialMode, SimulationSettings
+export ResetMode, SerialMode, SimulationSettings, predict
 
 abstract type SamplingMode end
 
@@ -58,13 +58,36 @@ end
 
 #####################################
 
+"""
+    predict(tnn, sim, inputs; seed=nothing)
+
+Return the mean network output at `sim.t_final` across `sim.M` reset trajectories.
+Input columns represent samples; a vector represents one sample. The returned
+matrix has shape `(n_outputs, n_points)`. Each trajectory starts from zero.
+"""
+function predict(
+    tnn::TNN{FT},
+    sim::SimulationSettings{ResetMode},
+    inputs::AbstractVecOrMat{FT};
+    seed=nothing,
+) where {FT}
+    size(inputs, 1) == n_inputs(params(tnn)) ||
+        throw(DimensionMismatch("inputs must have $(n_inputs(params(tnn))) rows"))
+    size(inputs, 2) > 0 || throw(ArgumentError("inputs must contain at least one point"))
+    I = inputs isa AbstractVector ? reshape(inputs, length(inputs), 1) : inputs
+    initial = similar(I, n_neurons(tnn), size(I, 2))
+    fill!(initial, zero(FT))
+    return _predict!(tnn, SimulationSettings(sim, FT), initial, I; seed)
+end
+
 function _predict!(
     tnn::TNN{FT},
     sim::SimulationSettings{ResetMode,FT},
     X₀::T,
-    I::T,
-    sensealg;
+    I::T;
     seed = nothing,
+    trajectory_seeds = nothing,
+    noise_observer = nothing,
 ) where {FT, T <: AbstractVecOrMat{FT}}
 
     @assert size(I, 2) == size(X₀, 2) "Input and initial state batch size (2nd dim) must match got $(size(I,2)), $(size(X₀, 2))"
@@ -86,16 +109,22 @@ function _predict!(
     end
 
     dynamics = SciMLBase.SDEFunction{true,SciMLBase.FullSpecialize}(forcing!, noise!)
-    # Brownian increments are independent of the parameters. Explicit Float storage
-    # avoids ReverseDiff.TrackedArray noise buffers, which disallow mutation.
-    brownian = Zygote.ignore() do
+    brownian = if trajectory_seeds === nothing
         SDE.WienerProcess!(zero(FT), zero(vec(X₀)))
+    else
+        # The solver reseeds this private noise RNG from the trajectory RNG.
+        # Neither construction nor replay depends on the task-local RNG.
+        SDE.WienerProcess!(zero(FT), zero(vec(X₀)); rng=Random.Xoshiro(0))
     end
     prob = SDE.SDEProblem(
         dynamics, noise!, vec(X₀), (zero(FT), sim.t_final), _pack_parameters(tnn);
         noise=brownian,
     )
-    sol = _simulate!(prob, sim, sensealg; seed)
+    sol = _simulate!(prob, sim; seed, trajectory_seeds)
+
+    if noise_observer !== nothing
+        noise_observer(sol)
+    end
 
     @assert length(sol.u) == sim.M "length(sol.u) != M you coded something wrong ethan"
     @assert length(sol.u[1].u[end]) == length(X₀)
@@ -118,32 +147,34 @@ function _predict!(
 end
 
 
-# Random seeds are independent of the model parameters. Exclude task-local RNG
-# setup from AD (Julia 1.13's seed! accesses task-local storage).
 function _trajectory_rng(ctx)
-    return Zygote.ignore() do
-        ctx.sim_seed === nothing || Random.seed!(ctx.sim_seed)
-        Random.default_rng()
-    end
+    ctx.sim_seed === nothing || Random.seed!(ctx.sim_seed)
+    return Random.default_rng()
+end
+
+function _replay_rng(ctx, seeds)
+    return Random.Xoshiro(seeds[ctx.sim_id])
 end
 
 function _simulate!(
     prob,
-    sim,
-    sensealg;
+    sim;
     seed = nothing,
+    trajectory_seeds = nothing,
 )
-    
+    trajectory_seeds === nothing || length(trajectory_seeds) == sim.M ||
+        throw(DimensionMismatch("one explicit seed is required per trajectory"))
+    rng_factory = trajectory_seeds === nothing ? _trajectory_rng :
+        ctx -> _replay_rng(ctx, trajectory_seeds)
+
     ensembleprob = SDE.EnsembleProblem(prob)
     seed_kwargs = seed === nothing ? (;) : (; seed)
     sol = SciMLBase.solve(
         ensembleprob,
         sim.integrator,
-        # Threaded ReverseDiff ensembles failed the multi-trajectory FD check.
         SDE.EnsembleSerial();
-        sensealg=sensealg,
         trajectories = sim.M,
-        rng_func = _trajectory_rng,
+        rng_func = rng_factory,
         dt=sim.Δt,
         adaptive=false, #! change?
         save_noise = true,

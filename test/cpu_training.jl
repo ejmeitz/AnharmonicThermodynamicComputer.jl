@@ -1,4 +1,4 @@
-using AnharmonicThermodynamicComputer, SciMLSensitivity, Zygote
+using AnharmonicThermodynamicComputer
 using Test, Random
 
 const ATC = AnharmonicThermodynamicComputer
@@ -9,22 +9,23 @@ const ATC = AnharmonicThermodynamicComputer
     targets = randn(2, 3)
     initial = 0.1 .* randn(4, 3)
     model = TNN(2, 2, 2, 2, inputs)
-    algorithm = ReverseDiffAdjoint()
 
     for kBT in (0.0, 0.1), M in (1, 3), dt in (0.01, 0.005)
         @testset "kBT=$kBT M=$M dt=$dt" begin
             sim = SimulationSettings(dt, 0.1, kBT, 0.7, M, ResetMode)
             # Reuse exactly the same noise in AD and both FD evaluations.
-            loss(m) = ATC.mse_loss(m, sim, initial, inputs, targets, algorithm; seed=739)
+            plan = ReplayPlan(M; seed=739)
+            loss(m) = ATC.mse_loss(m, sim, initial, inputs, targets;
+                seed=0, trajectory_seeds=plan.seeds)
             println("Checking AD against FD: kBT=$kBT M=$M dt=$dt")
             flush(stdout)
-            value, gradients = Zygote.withgradient(loss, model)
-            @test value ≈ loss(model)
+            result = replay_mse_gradient(model, sim, inputs, targets, plan; initial_state=initial)
+            @test result.loss ≈ loss(model)
             max_error = 0.0
 
             for field in (:bᵢ, :Jᵢⱼ, :Wᵢⱼ, :fᵢ)
                 values = getproperty(model.params, field)
-                ad = getproperty(only(gradients).params, field)
+                ad = getproperty(result.gradient.params, field)
                 # Two perturbation sizes help distinguish FD rounding/truncation
                 # error from an incorrect AD gradient. Check every scalar entry.
                 for h in (1e-4, 1e-5), i in eachindex(values)

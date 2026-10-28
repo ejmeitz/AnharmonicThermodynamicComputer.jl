@@ -1,4 +1,4 @@
-export TNN, TNNParameters
+export TNN, TNNParameters, enforce_connectivity!
 
 abstract type Connectivity end
 struct AllToAll <: Connectivity end
@@ -80,23 +80,32 @@ end
 
 float_type(::Type{<:AbstractArray{T}}) where T = T
 
+"""
+    TNNParameters(n_inputs, n_layers, neurons_per_layer, n_outputs, array_prototype;
+                  σ=0.1, coupling_σ=1.0)
+
+Initialize Gaussian parameters with standard deviation `coupling_σ` for W and
+allowed symmetric J couplings, and `σ` for biases and the output readout.
+"""
 function TNNParameters(
     n_inputs::Int,
     n_layers::Int,
     neurons_per_layer::Int,
     n_outputs::Int,
     array_prototype::AT;
-    σ = 0.1
+    σ = 0.1,
+    coupling_σ = 1.0,
 ) where {AT <: AbstractArray}
 
     FT = float_type(AT)
     σ = FT(σ)
+    coupling_σ = FT(coupling_σ)
 
     n_neurons = n_layers * neurons_per_layer
     
     Wᵢⱼ = similar(array_prototype, n_inputs, neurons_per_layer)
     randn!(Wᵢⱼ)
-    Wᵢⱼ .*= σ
+    Wᵢⱼ .*= coupling_σ
 
     bᵢ = similar(Wᵢⱼ, n_neurons)
     randn!(bᵢ)
@@ -107,7 +116,7 @@ function TNNParameters(
 
     Jᵢⱼ = similar(Wᵢⱼ, n_neurons, n_neurons)
     randn!(Jᵢⱼ)
-    Jᵢⱼ = FT(σ / sqrt(FT(2))) .* (Jᵢⱼ .+ transpose(Jᵢⱼ))
+    Jᵢⱼ = FT(coupling_σ / sqrt(FT(2))) .* (Jᵢⱼ .+ transpose(Jᵢⱼ))
     Jᵢⱼ .*= connectivity_matrix
 
     fᵢ = similar(Wᵢⱼ, n_outputs, neurons_per_layer)
@@ -156,6 +165,21 @@ Base.length(tnn::TNN) = n_neurons(tnn)
 n_layers(tnn::TNN) = tnn.n_layers
 n_first_layer_neurons(tnn::TNN) = n_first_layer_neurons(params(tnn))
 n_last_layer_neurons(tnn::TNN) = n_last_layer_neurons(params(tnn))
+
+# Project each optimizer update back onto the current AllToAll constraints.
+# J_scale's nonzero pattern marks allowed edges; its magnitudes are not applied.
+function enforce_connectivity!(tnn::TNN{FT,AllToAll}) where FT
+    p = params(tnn)
+    J = p.Jᵢⱼ
+    for j in axes(J, 2)
+        J[j, j] = zero(FT)
+        for i in 1:j-1
+            coupling = iszero(p.J_scale[i, j]) ? zero(FT) : (J[i, j] + J[j, i]) / 2
+            J[i, j] = J[j, i] = coupling
+        end
+    end
+    return tnn
+end
 
 function TNN(
     parameters::TNNParameters{FT},

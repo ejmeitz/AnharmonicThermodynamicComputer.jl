@@ -1,7 +1,5 @@
 using AnharmonicThermodynamicComputer
-using SciMLSensitivity
 using Optimisers
-using Zygote
 using LinearAlgebra
 
 const ATC = AnharmonicThermodynamicComputer
@@ -56,12 +54,13 @@ end
 
 println("Total parameters: $total")
 
-# Sensitivity algorithm
-sensealg = SciMLSensitivity.ReverseDiffAdjoint()
+# Reusable gradient tape and fixed trajectory noise
+cache = ReplayGradientCache(tnn, sim, I)
+plan = ReplayPlan(M; seed=1234)
 
 # Loss function
 loss(tnn) = ATC.mse_loss(
-    tnn, sim, X₀, I, targets, sensealg; seed=1234
+    tnn, sim, X₀, I, targets; seed=0, trajectory_seeds=plan.seeds
 )
 
 # Test forward evaluation
@@ -71,8 +70,8 @@ value = loss(tnn)
 
 # Test gradients
 println("\nTesting AD...")
-value, grads = Zygote.withgradient(loss, tnn)
-grad = only(grads)
+result = replay_mse_gradient(tnn, sim, I, targets, plan; cache, initial_state=X₀)
+value, grad = result.loss, result.gradient
 
 @show value
 
@@ -105,6 +104,7 @@ J_before = copy(tnn.params.Jᵢⱼ)
 opt_state, tnn_new = Optimisers.update(
     opt_state, tnn, grad
 )
+enforce_connectivity!(tnn_new)
 
 println("Optimizer update completed.")
 
