@@ -1,5 +1,6 @@
 [deps]
 AnharmonicThermodynamicComputer = "41309133-8566-459d-90d1-09a36d696df4"
+MLDatasets = "eb30cadb-4394-5ae3-aed4-317e484a6458"
 Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 
@@ -7,5 +8,6 @@ Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 AnharmonicThermodynamicComputer = {path = ".."}
 
 [compat]
+MLDatasets = "0.7"
 Plots = "1"
 julia = "1.11"

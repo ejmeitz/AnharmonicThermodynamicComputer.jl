@@ -4,15 +4,15 @@ export ReplayGradientCache
     ReplayGradientCache(tnn, sim, inputs)
 
 Record one reusable ReverseDiff tape for the fixed-step EM replay prototype.
-Pass it to `replay_mse_gradient(...; cache)` to reuse the tape and derivative
+Pass it to `replay_loss_gradient(...; cache)` to reuse the tape and derivative
 buffers across trajectories and training updates. Tape compilation is not used.
 
 Parameters, input values, initial states, noise increments, and the output
 cotangent are explicit tape inputs. They may change between calls, as may the
 number of trajectories. Array shapes/types, neuron coefficients, timestep,
-final time, mobility, and temperature must remain fixed; otherwise rebuild.
-CPU matrices, QuarticNeuron (including its harmonic case), and ResetMode/EM
-only. A cache is mutable workspace and must not
+final time, mobility, temperature, sampling mode, and serial observation times
+must remain fixed; otherwise rebuild. CPU matrices, QuarticNeuron (including
+its harmonic case), and fixed-step EM only. A cache is mutable workspace and must not
 be used concurrently. Returned results own their storage and survive reuse.
 
 The SDE solver still supplies each trajectory's Brownian history. The tape
@@ -20,7 +20,9 @@ replays EM using increments from that history, with array-level operations.
 Floating-point operation order can differ from the solver at roundoff level.
 With `check_replay=true`, both Brownian fingerprints and each tape prediction
 are checked against the SDE solves. This reduces tape construction allocations,
-but forward solves and some replay operations still allocate.
+but forward solves and some replay operations still allocate. Tape and Brownian
+history memory grow with the number of integration steps in one trajectory;
+serial sampling does not split or truncate differentiation through a long path.
 """
 struct ReplayGradientCache{T,D}
     tape::T
@@ -29,18 +31,24 @@ end
 
 # Pure, fixed-shape arithmetic: no random draws or data-dependent branches are
 # recorded. Array operations retain ReverseDiff's array-level differentiation.
-function _em_replay_output(layout, sim, steps, coefficients, values, noise, inputs, initial)
+function _em_replay_output(layout, sim, steps, coefficients, values, noise, inputs, initial, observation_weights=nothing)
     p = _parameter_views(layout, values)
     J2, J3, J4, first_layer = coefficients
     N, K = size(initial)
     external = first_layer * (transpose(p.Wᵢⱼ) * inputs)
     X = initial
+    n_last = size(p.fᵢ, 2)
+    sampled = observation_weights === nothing ? nothing :
+        observation_weights[1] .* X[end-n_last+1:end, :]
     for s in eachindex(steps)
         local_force = p.bᵢ .- X .* (2 .* J2 .+ X .* (3 .* J3 .+ 4 .* J4 .* X))
         F = ((local_force .- p.Jᵢⱼ * X) .- external) .* sim.μ
         X = (X .+ steps[s] .* F) .+ sim.noise_scale .* reshape(view(noise, :, s), N, K)
+        if observation_weights !== nothing && !iszero(observation_weights[s + 1])
+            sampled = sampled .+ observation_weights[s + 1] .* X[end-n_last+1:end, :]
+        end
     end
-    return p.fᵢ * X[end-size(p.fᵢ, 2)+1:end, :]
+    return p.fᵢ * (observation_weights === nothing ? X[end-n_last+1:end, :] : sampled)
 end
 
 function _copy_noise_increments!(noise, times, sol)
@@ -52,7 +60,7 @@ function _copy_noise_increments!(noise, times, sol)
     return nothing
 end
 
-function ReplayGradientCache(tnn::TNN{FT}, sim::SimulationSettings{ResetMode}, inputs::Matrix{FT}) where {FT}
+function ReplayGradientCache(tnn::TNN{FT}, sim::SimulationSettings, inputs::Matrix{FT}) where {FT}
     sim.integrator isa SDE.EM || throw(ArgumentError("the tape cache requires EM()"))
     all(n -> n isa QuarticNeuron, neurons(tnn)) ||
         throw(ArgumentError("the tape cache requires QuarticNeuron neurons"))
@@ -69,6 +77,17 @@ function ReplayGradientCache(tnn::TNN{FT}, sim::SimulationSettings{ResetMode}, i
         trajectory_seeds=UInt64[0], noise_observer=sol -> (history[] = only(sol.u).W))
     times = copy(history[].t)
     steps = diff(times)
+    observation_weights = if sampling_mode(one_sim) === SerialMode
+        weights = zeros(FT, length(times))
+        for t in one_sim.saveat
+            idx = findfirst(==(t), times)
+            idx === nothing && error("serial observation is not on the saved EM grid")
+            weights[idx] = inv(FT(one_sim.M))
+        end
+        weights
+    else
+        nothing
+    end
     noise = Matrix{FT}(undef, length(initial), length(steps))
     for s in eachindex(steps)
         @views noise[:, s] .= history[].W[s + 1] .- history[].W[s]
@@ -82,15 +101,17 @@ function ReplayGradientCache(tnn::TNN{FT}, sim::SimulationSettings{ResetMode}, i
     tape_inputs = (_pack_parameters(tnn), noise, copy(inputs), initial,
                    zeros(FT, n_outputs(params(tnn)), size(inputs, 2)))
     objective = (values, increments, I, X0, cotangent) ->
-        sum(_em_replay_output(layout, one_sim, steps, coefficients, values, increments, I, X0) .* cotangent)
+        sum(_em_replay_output(layout, one_sim, steps, coefficients, values, increments, I, X0, observation_weights) .* cotangent)
     tape = ReverseDiff.GradientTape(objective, tape_inputs)
     derivatives = map(zero, tape_inputs)
-    data = (; layout, sim=one_sim, times, steps, coefficients, tape_inputs, derivatives)
+    data = (; layout, sim=one_sim, times, steps, coefficients, observation_weights, tape_inputs, derivatives)
     return ReplayGradientCache(tape, data)
 end
 
 function _check_replay_cache(cache::ReplayGradientCache, tnn, sim, inputs)
     d = cache.data
+    sampling_mode(sim) === sampling_mode(d.sim) && sim.saveat == d.sim.saveat ||
+        throw(ArgumentError("sampling mode or observation times changed; rebuild ReplayGradientCache"))
     size(inputs) == size(d.tape_inputs[3]) && eltype(inputs) == eltype(d.tape_inputs[3]) ||
         throw(DimensionMismatch("input shape/type changed; rebuild ReplayGradientCache"))
     all(name -> size(getproperty(params(tnn), name)) == size(getproperty(params(d.layout), name)),
@@ -102,8 +123,8 @@ function _check_replay_cache(cache::ReplayGradientCache, tnn, sim, inputs)
     return nothing
 end
 
-function _cached_replay_mse_gradient(cache::ReplayGradientCache, tnn::TNN{FT}, sim,
-    inputs, targets, plan, initial; check_replay, progress) where {FT}
+function _cached_replay_loss_gradient(cache::ReplayGradientCache, tnn::TNN{FT}, sim,
+    inputs, targets, plan, initial; loss, check_replay, progress) where {FT}
     _check_replay_cache(cache, tnn, sim, inputs)
     d = cache.data
     values, noise, I, X0, cotangent = d.tape_inputs
@@ -111,9 +132,10 @@ function _cached_replay_mse_gradient(cache::ReplayGradientCache, tnn::TNN{FT}, s
     I .= inputs
     X0 .= initial
     seeds = copy(plan.seeds)
+    n_trajectories = length(seeds)
     predictions = zeros(FT, size(targets))
-    fingerprints = check_replay ? Vector{UInt}(undef, sim.M) : nothing
-    meter = Progress(2 * sim.M; desc="Cached replay ", showspeed=true, enabled=progress)
+    fingerprints = check_replay ? Vector{UInt}(undef, n_trajectories) : nothing
+    meter = Progress(2 * n_trajectories; desc="Cached replay ", showspeed=true, enabled=progress)
     update!(meter, 0; force=true)
     for i in eachindex(seeds)
         observer = check_replay ? sol -> (fingerprints[i] = _noise_fingerprint(sol)) : nothing
@@ -121,11 +143,10 @@ function _cached_replay_mse_gradient(cache::ReplayGradientCache, tnn::TNN{FT}, s
             seed=0, trajectory_seeds=view(seeds, i:i), noise_observer=observer)
         next!(meter)
     end
-    predictions ./= FT(sim.M)
-    residual = predictions .- targets
-    loss = sum(abs2, residual) / size(inputs, 2)
-    isfinite(loss) || error("replay forward pass produced a non-finite loss")
-    cotangent .= (FT(2) / (FT(size(inputs, 2)) * FT(sim.M))) .* residual
+    predictions ./= FT(n_trajectories)
+    value = _loss_and_cotangent!(cotangent, loss, predictions, targets)
+    isfinite(value) || error("replay forward pass produced a non-finite loss")
+    cotangent ./= FT(n_trajectories)
     accumulated = zero(values)
     for i in eachindex(seeds)
         observer = sol -> begin
@@ -149,5 +170,5 @@ function _cached_replay_mse_gradient(cache::ReplayGradientCache, tnn::TNN{FT}, s
     end
     all(isfinite, accumulated) || error("replay produced a non-finite gradient")
     gradient = (; params=map(copy, _parameter_views(tnn, accumulated)))
-    return (; loss, predictions, gradient, seeds, noise_fingerprints=fingerprints)
+    return (; loss=value, predictions, gradient, seeds, noise_fingerprints=fingerprints)
 end

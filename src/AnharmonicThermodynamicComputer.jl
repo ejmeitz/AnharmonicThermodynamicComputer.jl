@@ -20,8 +20,10 @@ include("neuron.jl")
 include("network.jl")
 include("sensitivity.jl")
 include("simulate.jl")
+include("loss.jl")
 include("replay.jl")
 include("replay_cache.jl")
+include("threaded_replay.jl")
 include("train.jl")
 
 end
